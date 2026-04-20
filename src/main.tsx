@@ -64,6 +64,8 @@ function App({ initialConfig }: { initialConfig: CliConfig | null }) {
 }
 
 function startApp(config: CliConfig | null) {
+  // Clear terminal so the new Ink instance doesn't render below stale content
+  process.stdout.write('\x1B[2J\x1B[H');
   return render(<App initialConfig={config} />);
 }
 
