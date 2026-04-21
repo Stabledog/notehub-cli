@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,10 +22,14 @@ function getEditor(): string {
   return editor;
 }
 
+function unixPath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 function writeTempFile(title: string, body: string, suffix: string): string {
-  const path = join(tmpdir(), `notehub-${suffix}-${Date.now()}.md`);
-  writeFileSync(path, `${title}\n${SEPARATOR}\n${body}`, 'utf-8');
-  return path;
+  const p = unixPath(join(tmpdir(), `notehub-${suffix}-${Date.now()}.md`));
+  writeFileSync(p, `${title}\n${SEPARATOR}\n${body}`, 'utf-8');
+  return p;
 }
 
 function parseTempFile(path: string): { title: string; body: string } | null {
@@ -51,14 +55,37 @@ function cleanupTempFile(path: string) {
   try { unlinkSync(path); } catch { /* ignore */ }
 }
 
-/** Spawn $EDITOR on a temp file. Caller must handle terminal suspend/resume. */
-export function runEditor(tempPath: string): boolean {
+/** Spawn $EDITOR on a temp file. Returns a promise that resolves to success/failure. */
+export function runEditor(tempPath: string): Promise<boolean> {
   const editor = getEditor();
-  const result = spawnSync(editor, [tempPath], {
-    stdio: 'inherit',
-    env: process.env,
+  const shell = process.env.SHELL || process.env.BASH || true;
+
+  // Fully release stdin before spawning — Ink puts it in raw mode
+  // and attaches data listeners that steal keystrokes from the editor.
+  const wasRaw = process.stdin.isRaw;
+  if (wasRaw) process.stdin.setRawMode(false);
+  process.stdin.pause();
+  process.stdin.removeAllListeners('data');
+
+  return new Promise((resolve) => {
+    const child = spawn(editor, [tempPath], {
+      stdio: 'inherit',
+      env: process.env,
+      shell,
+    });
+
+    child.on('error', (err) => {
+      process.stderr.write(
+        `\nFailed to launch editor '${editor}': ${err.message}\n` +
+        `  shell=${String(shell)}\n\n`,
+      );
+      resolve(false);
+    });
+
+    child.on('exit', (code) => {
+      resolve(code === 0);
+    });
   });
-  return result.status === 0;
 }
 
 export interface EditResult {
@@ -80,7 +107,7 @@ export async function openNote(
   const originalUpdatedAt = fresh.updated_at;
   const tempPath = writeTempFile(fresh.title, fresh.body ?? '', String(note.number));
 
-  const ok = runEditor(tempPath);
+  const ok = await runEditor(tempPath);
 
   if (!ok) {
     cleanupTempFile(tempPath);
@@ -130,7 +157,7 @@ export async function openNewNote(
 ): Promise<EditResult> {
   const tempPath = writeTempFile('New note', '', 'new');
 
-  const ok = runEditor(tempPath);
+  const ok = await runEditor(tempPath);
 
   if (!ok) {
     cleanupTempFile(tempPath);

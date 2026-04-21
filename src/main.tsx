@@ -6,6 +6,17 @@ import { ListScreen } from './screens/list.js';
 import { openNote, openNewNote, type EditResult } from './screens/editor.js';
 import type { NoteSearchResult } from './github.js';
 
+// Replaced by esbuild --define at bundle time; falls back to package.json for dev
+declare const __CLI_VERSION__: string | undefined;
+const CLI_VERSION: string = typeof __CLI_VERSION__ !== 'undefined'
+  ? __CLI_VERSION__
+  : require('../package.json').version;
+
+if (process.argv.includes('--version') || process.argv.includes('-v')) {
+  console.log(`notehub-cli ${CLI_VERSION}`);
+  process.exit(0);
+}
+
 type Screen =
   | { type: 'settings' }
   | { type: 'list' }
@@ -28,6 +39,9 @@ function App({ initialConfig }: { initialConfig: CliConfig | null }) {
     // Unmount Ink, spawn editor, remount
     instance.unmount();
     openNote(config, note).then((result) => {
+      if (result.action === 'error' && result.message) {
+        process.stderr.write(`\n${result.message}\n\n`);
+      }
       instance = startApp(config);
     });
   }, [config]);
