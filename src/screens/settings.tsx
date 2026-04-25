@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { CliConfig } from '../config.js';
 import { validateToken } from '../github.js';
+import { logInfo, logError } from '../logger.js';
 
 interface Props {
   existing: CliConfig | null;
@@ -93,9 +94,11 @@ export function SettingsScreen({ existing, onComplete }: Props) {
   async function doSave(vals: Record<string, string>) {
     setValidating(true);
     setStatus('Validating token...');
+    logInfo(`Settings: Validating token for host=${vals.host}`);
 
     try {
       const user = await validateToken(vals.host, vals.token);
+      logInfo(`Settings: Token validated for user ${user.login} on ${vals.host}`);
       setStatus(`Authenticated as ${user.login}`);
 
       const [owner, repo] = vals.defaultRepo.split('/');
@@ -110,6 +113,7 @@ export function SettingsScreen({ existing, onComplete }: Props) {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      logError(`Settings: Token validation failed for host=${vals.host}: ${msg}`);
       setStatus(`Auth failed: ${msg}`);
       setValidating(false);
       // Go back to token field

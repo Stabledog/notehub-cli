@@ -7,6 +7,7 @@ import {
   type NoteSearchResult, type GitHubIssue,
 } from '../github.js';
 import type { CliConfig } from '../config.js';
+import { logInfo, logWarn, logError } from '../logger.js';
 
 const SEPARATOR = '---';
 
@@ -97,11 +98,15 @@ export async function openNote(
   config: CliConfig,
   note: NoteSearchResult,
 ): Promise<EditResult> {
+  logInfo(`Note: Opening note #${note.number} from ${note.owner}/${note.repo}`);
   let fresh: GitHubIssue;
   try {
     fresh = await getNote(config.host, config.token, note.owner, note.repo, note.number);
+    logInfo(`Note: Loaded note #${note.number}: "${fresh.title}"`);
   } catch (err) {
-    return { action: 'error', message: `Failed to fetch: ${err instanceof Error ? err.message : err}` };
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`Note: Failed to load note #${note.number}: ${msg}`);
+    return { action: 'error', message: `Failed to fetch: ${msg}` };
   }
 
   const originalUpdatedAt = fresh.updated_at;
@@ -135,18 +140,23 @@ export async function openNote(
   }
 
   if (conflict) {
+    logWarn(`Note: Remote conflict detected for #${note.number}`);
     // Caller can prompt the user; for now, return info
     // TODO: expose conflict to caller for interactive resolution
   }
 
+  logInfo(`Note: Save initiated for #${note.number}`);
   try {
     const data: { title?: string; body?: string } = {};
     if (parsed.title !== fresh.title) data.title = parsed.title;
     if (parsed.body !== (fresh.body ?? '')) data.body = parsed.body;
     await updateNote(config.host, config.token, note.owner, note.repo, note.number, data);
+    logInfo(`Note: Save successful for #${note.number}: "${parsed.title}"`);
     return { action: 'saved' };
   } catch (err) {
-    return { action: 'error', message: `Save failed: ${err instanceof Error ? err.message : err}` };
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`Note: Save failed for #${note.number}: ${msg}`);
+    return { action: 'error', message: `Save failed: ${msg}` };
   }
 }
 
@@ -155,6 +165,7 @@ export async function openNewNote(
   owner: string,
   repo: string,
 ): Promise<EditResult> {
+  logInfo(`Note: Creating new note in ${owner}/${repo}`);
   const tempPath = writeTempFile('New note', '', 'new');
 
   const ok = await runEditor(tempPath);
@@ -172,9 +183,12 @@ export async function openNewNote(
   }
 
   try {
-    await createNote(config.host, config.token, owner, repo, parsed.title, parsed.body);
+    const created = await createNote(config.host, config.token, owner, repo, parsed.title, parsed.body);
+    logInfo(`Note: Created new note #${created.number}`);
     return { action: 'saved' };
   } catch (err) {
-    return { action: 'error', message: `Create failed: ${err instanceof Error ? err.message : err}` };
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`Note: Failed to create note: ${msg}`);
+    return { action: 'error', message: `Create failed: ${msg}` };
   }
 }

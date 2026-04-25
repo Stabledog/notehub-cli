@@ -4,6 +4,7 @@ import stringWidth from 'string-width';
 import type { CliConfig } from '../config.js';
 import { searchNotes, archiveNote, type NoteSearchResult } from '../github.js';
 import { copyToClipboard } from '../clipboard.js';
+import { logInfo, logError } from '../logger.js';
 
 interface Props {
   config: CliConfig;
@@ -64,6 +65,7 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
 
   async function fetchNotes() {
     showStatus('Loading...');
+    logInfo('Note list: Fetching notes');
     try {
       let results = await searchNotes(config.host, config.token);
 
@@ -81,8 +83,11 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
       setSelectedIdx(0);
       setVisibleStart(0);
       showStatus('', 'green');
+      logInfo(`Note list: Loaded ${results.length} notes`);
     } catch (err) {
-      showStatus(`Error: ${err instanceof Error ? err.message : err}`, 'red');
+      const msg = err instanceof Error ? err.message : String(err);
+      showStatus(`Error: ${msg}`, 'red');
+      logError(`Note list: Failed to load notes: ${msg}`);
     }
   }
 
@@ -118,14 +123,18 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
   async function doDelete() {
     const note = filteredNotes[selectedIdx];
     if (!note) return;
+    logInfo(`Note list: Deleting note #${note.number}: "${note.title}"`);
     showStatus('Deleting...');
     try {
       await archiveNote(config.host, config.token, note.owner, note.repo, note.number);
+      logInfo(`Note list: Deleted note #${note.number}`);
       showStatus('Deleted', 'green');
       setConfirmDelete(false);
       await fetchNotes();
     } catch (err) {
-      showStatus(`Delete failed: ${err instanceof Error ? err.message : err}`, 'red');
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`Note list: Delete failed for #${note.number}: ${msg}`);
+      showStatus(`Delete failed: ${msg}`, 'red');
       setConfirmDelete(false);
     }
   }
@@ -155,7 +164,9 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
       return;
     }
 
-    if (input === 'j' || key.downArrow) moveTo(selectedIdx + 1);
+    if (key.ctrl && input === 'd') moveTo(Math.min(selectedIdx + Math.floor(maxVisible / 2), filteredNotes.length - 1));
+    else if (key.ctrl && input === 'u') moveTo(Math.max(selectedIdx - Math.floor(maxVisible / 2), 0));
+    else if (input === 'j' || key.downArrow) moveTo(selectedIdx + 1);
     else if (input === 'k' || key.upArrow) moveTo(selectedIdx - 1);
     else if (key.return) {
       const note = filteredNotes[selectedIdx];
@@ -170,7 +181,7 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
       setSearchMode(true);
       setSearchQuery('');
     }
-    else if (input === 'd') {
+    else if (input === 'd' && !key.ctrl) {
       if (filteredNotes[selectedIdx]) {
         setConfirmDelete(true);
         showStatus(`Delete "${filteredNotes[selectedIdx].title}"? (y/n)`, 'red');
@@ -245,7 +256,7 @@ export function ListScreen({ config, onOpenNote, onNewNote, onSettings }: Props)
       {/* Footer */}
       <Box marginTop={0}>
         <Text backgroundColor="white" color="black">
-          {fitCol(' j/k:Nav  Enter:Open  n:New  r:Refresh  /:Search  d:Del  y:CopyURL  s:Settings  q:Quit', termWidth)}
+          {fitCol(' j/k:Nav  ^D/^U:Page  Enter:Open  n:New  r:Refresh  /:Search  d:Del  y:CopyURL  s:Settings  q:Quit', termWidth)}
         </Text>
       </Box>
     </Box>
