@@ -1,0 +1,60 @@
+name: Release notehub-cli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - '.github/workflows/**'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle with esbuild
+        run: |
+          npx esbuild src/main.tsx \
+            --bundle --platform=node --format=esm \
+            --outfile=dist/notehub-cli.mjs \
+            --define:__CLI_VERSION__="'${{ steps.version.outputs.version }}'" \
+            --alias:react-devtools-core=./shims/react-devtools-core.mjs \
+            --banner:js="import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+
+      - name: Check if release exists
+        id: check
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if gh release view "$tag" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          gh release create "$tag" dist/notehub-cli.mjs \
+            --title "$tag" --notes "notehub-cli $tag"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
