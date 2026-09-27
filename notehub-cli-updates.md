@@ -31,6 +31,6 @@ already has the API functions but no UI exposes them. Web commits: `e9e0056`,
 
 | status | name | description |
 |--------|------|-------------|
-| — | `attachment-upload-download` | **[a]** Core attachment operations: upload files to the `.attachments` repo and download them back. CLI effort: Large — needs a TUI attachment panel. |
+| ✅ agent CLI (2026-09-26) | `attachment-upload-download` | **[a]** Core attachment operations: upload files to the `.attachments` repo and download them back. Agent subcommands added (`attach`/`attachments`/`download`/`detach`); the TUI attachment panel is still open. CLI effort: Large — needs a TUI attachment panel. |
 | — | `attachment-preview` | **[b]** Open/display attachment content in-terminal or via `$PAGER` / a temp file. CLI effort: Medium — extend attachment UI after `attachment-upload-download`. |
 | — | `attachment-multi-delete` | **[c]** Batch deletion with checkbox-style multi-selection before confirming delete. CLI effort: Medium — extend attachment UI. |

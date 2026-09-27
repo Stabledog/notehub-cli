@@ -1,19 +1,25 @@
 import React, { useState, useCallback } from 'react';
 import { render } from 'ink';
 import { loadConfig, saveConfig, type CliConfig } from './config.js';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { SettingsScreen } from './screens/settings.js';
 import { ListScreen } from './screens/list.js';
 import { openNote, openNewNote, type EditResult } from './screens/editor.js';
 import {
   searchNotes, getNote, updateNote, createNote, archiveNote,
+  getAttachmentsRepoInfo, listAttachments, uploadAttachment,
+  deleteAttachment, fetchAttachmentBlob, rawContentUrl,
   type NoteSearchResult,
 } from './github.js';
 
-// Replaced by esbuild --define at bundle time; falls back to package.json for dev
+// Replaced by esbuild --define at bundle time; falls back to package.json for dev.
+// (The fallback must be require()-free: unbundled tsc output runs as ESM.)
 declare const __CLI_VERSION__: string | undefined;
-const CLI_VERSION: string = typeof __CLI_VERSION__ !== 'undefined'
-  ? __CLI_VERSION__
-  : require('../package.json').version;
+const CLI_VERSION: string = (() => {
+  if (typeof __CLI_VERSION__ !== 'undefined') return __CLI_VERSION__;
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+  return pkg.version;
+})();
 
 if (process.argv.includes('--version') || process.argv.includes('-v')) {
   console.log(`notehub-cli ${CLI_VERSION}`);
@@ -29,8 +35,16 @@ if (process.argv.includes('--version') || process.argv.includes('-v')) {
 // notehub-cli.mjs set <number|owner/repo#number> [--title "..."] [--body "..."|--stdin]
 // notehub-cli.mjs create --title "..." [--body "..."|--stdin]
 // notehub-cli.mjs archive <number|owner/repo#number>
+// notehub-cli.mjs search <query> [--json]
+// notehub-cli.mjs attach <number|owner/repo#number> --file <path> [--as-name <name>]
+// notehub-cli.mjs attachments <number|owner/repo#number> [--json]
+// notehub-cli.mjs download <number|owner/repo#number> --name <name> [--out <path>]
+// notehub-cli.mjs detach <number|owner/repo#number> --name <name>
 
-const AGENT_CMDS = new Set(['list', 'get', 'set', 'create', 'archive']);
+const AGENT_CMDS = new Set([
+  'list', 'get', 'set', 'create', 'archive',
+  'search', 'attach', 'attachments', 'download', 'detach',
+]);
 const agentCmd = process.argv[2];
 
 if (agentCmd && AGENT_CMDS.has(agentCmd)) {
@@ -92,6 +106,46 @@ function readStdin(): Promise<string> {
   });
 }
 
+function printNoteRow(n: NoteSearchResult): void {
+  const updated = n.updated_at.slice(0, 10);
+  process.stdout.write(
+    `${String(n.number).padStart(5)}  ${(n.owner + '/' + n.repo).padEnd(30)}  ${updated}  ${n.title}\n`,
+  );
+}
+
+function printSnippet(n: NoteSearchResult, query: string): void {
+  const hay = `${n.title}\n${n.body ?? ''}`;
+  const i = hay.toLowerCase().indexOf(query.toLowerCase());
+  if (i >= 0) {
+    const snippet = hay.slice(Math.max(0, i - 60), i + 120).replace(/\n/g, ' ');
+    process.stdout.write(`      ...${snippet}...\n`);
+  }
+}
+
+// searchNotes() in github.ts takes no query; this variant does. Kept local
+// because github.ts is shared with notehub.web (symlinked, not ours to edit).
+async function searchNotesQuery(
+  host: string, token: string, query: string,
+): Promise<NoteSearchResult[]> {
+  const base = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`;
+  const q = encodeURIComponent(`${query} is:issue label:notehub state:open archived:false`);
+  const res = await fetch(
+    `${base}/search/issues?q=${q}&sort=updated&order=desc&per_page=100`,
+    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
+  );
+  if (!res.ok) throw new Error(`GitHub API ${res.status}: ${await res.text()}`);
+  const data = await res.json() as {
+    items: (NoteSearchResult & { repository_url: string })[];
+  };
+  return data.items.map(item => {
+    // repository_url looks like https://{host}/api/v3/repos/{owner}/{repo}
+    const parts = item.repository_url.split('/');
+    const repo = parts.pop()!;
+    const owner = parts.pop()!;
+    return { ...item, owner, repo };
+  });
+}
+
 async function runAgentCommand(cmd: string, argv: string[]): Promise<void> {
   const config = loadConfig();
   if (!config) {
@@ -111,10 +165,23 @@ async function runAgentCommand(cmd: string, argv: string[]): Promise<void> {
       if (flags['json']) {
         process.stdout.write(JSON.stringify(notes, null, 2) + '\n');
       } else {
+        for (const n of notes) printNoteRow(n);
+      }
+      break;
+    }
+
+    case 'search': {
+      const query = positional[0];
+      if (!query) throw new Error('Usage: search <query> [--json]');
+      const notes = await searchNotesQuery(host, token, query);
+      if (flags['json']) {
+        process.stdout.write(JSON.stringify(notes, null, 2) + '\n');
+      } else {
         for (const n of notes) {
-          const updated = n.updated_at.slice(0, 10);
-          process.stdout.write(`${String(n.number).padStart(5)}  ${(n.owner + '/' + n.repo).padEnd(30)}  ${updated}  ${n.title}\n`);
+          printNoteRow(n);
+          printSnippet(n, query);
         }
+        if (notes.length === 0) process.stderr.write('no matches\n');
       }
       break;
     }
@@ -173,6 +240,79 @@ async function runAgentCommand(cmd: string, argv: string[]): Promise<void> {
       const { owner, repo, number } = parseNoteRef(ref, defaultOwner, defaultRepoName);
       await archiveNote(host, token, owner, repo, number);
       process.stdout.write(`Archived ${owner}/${repo}#${number}\n`);
+      break;
+    }
+
+    case 'attach': {
+      const ref = positional[0];
+      const file = flags['file'];
+      if (!ref || typeof file !== 'string') {
+        throw new Error('Usage: attach <number|owner/repo#number> --file <path> [--as-name <name>]');
+      }
+      const { owner, repo, number } = parseNoteRef(ref, defaultOwner, defaultRepoName);
+      const filename = typeof flags['as-name'] === 'string'
+        ? flags['as-name'] : file.split('/').pop()!;
+      if (filename.includes('/')) throw new Error(`bad attachment filename: "${filename}"`);
+      const { owner: attachOwner, repo: attachRepo } = getAttachmentsRepoInfo(defaultRepo);
+      const content = readFileSync(file).toString('base64');
+      // Re-uploading the same name replaces it (pass the existing sha)
+      const existing = await listAttachments(host, token, attachOwner, attachRepo, owner, repo, number);
+      const prev = existing.find(a => a.name === filename);
+      const att = await uploadAttachment(
+        host, token, attachOwner, attachRepo, owner, repo, number,
+        filename, content, prev?.sha,
+      );
+      process.stdout.write(`attached ${att.path} to ${owner}/${repo}#${number}\n`);
+      process.stdout.write(rawContentUrl(host, attachOwner, attachRepo, att.path) + '\n');
+      break;
+    }
+
+    case 'attachments': {
+      const ref = positional[0];
+      if (!ref) throw new Error('Usage: attachments <number|owner/repo#number> [--json]');
+      const { owner, repo, number } = parseNoteRef(ref, defaultOwner, defaultRepoName);
+      const { owner: attachOwner, repo: attachRepo } = getAttachmentsRepoInfo(defaultRepo);
+      const atts = await listAttachments(host, token, attachOwner, attachRepo, owner, repo, number);
+      if (flags['json']) {
+        process.stdout.write(JSON.stringify(atts, null, 2) + '\n');
+      } else if (atts.length === 0) {
+        process.stdout.write('(no attachments)\n');
+      } else {
+        for (const a of atts) process.stdout.write(`${a.name}  (${a.size} bytes)\n`);
+      }
+      break;
+    }
+
+    case 'download': {
+      const ref = positional[0];
+      const name = flags['name'];
+      if (!ref || typeof name !== 'string') {
+        throw new Error('Usage: download <number|owner/repo#number> --name <name> [--out <path>]');
+      }
+      const { owner, repo, number } = parseNoteRef(ref, defaultOwner, defaultRepoName);
+      const { owner: attachOwner, repo: attachRepo } = getAttachmentsRepoInfo(defaultRepo);
+      const { blob, filename } = await fetchAttachmentBlob(
+        host, token, attachOwner, attachRepo, `${owner}/${repo}/${number}/${name}`,
+      );
+      const out = typeof flags['out'] === 'string' ? flags['out'] : filename;
+      writeFileSync(out, Buffer.from(await blob.arrayBuffer()));
+      process.stdout.write(`wrote ${out}\n`);
+      break;
+    }
+
+    case 'detach': {
+      const ref = positional[0];
+      const name = flags['name'];
+      if (!ref || typeof name !== 'string') {
+        throw new Error('Usage: detach <number|owner/repo#number> --name <name>');
+      }
+      const { owner, repo, number } = parseNoteRef(ref, defaultOwner, defaultRepoName);
+      const { owner: attachOwner, repo: attachRepo } = getAttachmentsRepoInfo(defaultRepo);
+      const atts = await listAttachments(host, token, attachOwner, attachRepo, owner, repo, number);
+      const att = atts.find(a => a.name === name);
+      if (!att) throw new Error(`no attachment named "${name}" on ${owner}/${repo}#${number}`);
+      await deleteAttachment(host, token, attachOwner, attachRepo, att.path, att.sha);
+      process.stdout.write(`removed ${att.path}\n`);
       break;
     }
   }
