@@ -12,11 +12,14 @@ import {
   type NoteSearchResult,
 } from './github.js';
 
-// Replaced by esbuild --define at bundle time; falls back to package.json for dev
+// Replaced by esbuild --define at bundle time; falls back to package.json for dev.
+// (The fallback must be require()-free: unbundled tsc output runs as ESM.)
 declare const __CLI_VERSION__: string | undefined;
-const CLI_VERSION: string = typeof __CLI_VERSION__ !== 'undefined'
-  ? __CLI_VERSION__
-  : require('../package.json').version;
+const CLI_VERSION: string = (() => {
+  if (typeof __CLI_VERSION__ !== 'undefined') return __CLI_VERSION__;
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+  return pkg.version;
+})();
 
 if (process.argv.includes('--version') || process.argv.includes('-v')) {
   console.log(`notehub-cli ${CLI_VERSION}`);
